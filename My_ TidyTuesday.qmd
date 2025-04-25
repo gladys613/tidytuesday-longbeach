@@ -1,0 +1,242 @@
+---
+title: "Exploring Animal Shelter Trends with Data: Long Beach TidyTuesday Case Study"
+author: "Gladys"
+date: "04-25-2025"
+date-format: "long"
+format:
+  html:
+    toc: true
+  pdf:
+    toc: true
+  docx:
+    toc: true
+
+---
+
+```{r setup, include=FALSE, message=FALSE}
+library(tidyverse)     
+library(tidytuesdayR)
+library(readr)
+library(lubridate)
+library(dplyr)
+library(ggplot2)
+library(patchwork)
+```
+
+## Introduction
+
+Ever wonder about the journey of animals in shelters? This week for #TidyTuesday, I dove into the fascinating data from the Long Beach Animal Shelter. Beyond just the heartwarming adoptions, I wanted to uncover the stories hidden within the intakes, the wait times, and the factors influencing an animal’s chance at a new beginning.
+
+
+## Background on Recent Shelter Changes
+
+Recent years have seen major changes at Long Beach Animal Care Services (LBACS):
+In 2022, the shelter achieved a record 1,968 adoptions, up 194% since 2018.
+This followed the rollout of new programs (like day-trip fostering) and staff expansion (e.g., foster & behavior coordinators).
+In 2025, LBACS ended its long partnership with spcaLA, gaining full control of the shelter.
+
+The analysis below explores how those changes show up in the shelter’s data.
+
+## Data Wrangling
+
+First, I loaded the longbeach dataset and then cleaned the data to focus on adoptions, grouped less frequent animal types as "Other," and added adoption year fields. I also computed how long each animal stayed in the shelter before adoption.
+
+```{r, message=FALSE}
+# Load the data
+tuesdata <- tidytuesdayR::tt_load('2025-03-04')
+longbeach <- tuesdata$longbeach
+
+# Filter for adopted animals with valid outcome dates
+adoptions_over_time <- longbeach %>%
+  filter(outcome_type == "adoption" & !is.na(outcome_date)) %>%
+  mutate(adoption_year = year(outcome_date),
+         animal_type = as.factor(animal_type)) %>%
+  count(adoption_year, animal_type) %>%
+  rename(num_adoptions = n)
+
+# Group less common animals to simplify visualization
+top_animal_types <- adoptions_over_time %>%
+  group_by(animal_type) %>%
+  summarise(total_adoptions = sum(num_adoptions)) %>%
+  top_n(5, total_adoptions) %>%
+  pull(animal_type)
+
+adoptions_grouped <- adoptions_over_time %>%
+  mutate(animal_type_grouped = ifelse(animal_type %in% top_animal_types,
+                                      as.character(animal_type),
+                                      "Other")) %>%
+  group_by(adoption_year, animal_type_grouped) %>%
+  summarise(num_adoptions = sum(num_adoptions), .groups = 'drop') %>%
+  mutate(animal_type_grouped = as.factor(animal_type_grouped))
+
+# Calculate total adoptions per year for the trend line
+total_adoptions_per_year <- adoptions_grouped %>%
+  group_by(adoption_year) %>%
+  summarise(total = sum(num_adoptions), .groups = 'drop')
+```
+
+## Tracking Program Impact: Adoption Trends Since 2013
+
+To really explore the adoption trends, I decided to create an interactive stacked area chart using ggplot2 and plotly. This allows us to see both the total number of adoptions over time and the breakdown by different animal types. I also added a line showing the overall total adoptions each year to highlight the general trend.
+
+```{r}
+p_grouped_with_total <- ggplot() +
+  geom_area(data = adoptions_grouped, aes(x = adoption_year, y = num_adoptions, fill = animal_type_grouped), alpha = 0.7) +
+  geom_line(data = total_adoptions_per_year, aes(x = adoption_year, y = total), color = "black", linewidth = 1) +
+  labs(title = "Pet Adoptions Over Time by Major Animal Type with Total Trend",
+  x = "Year",
+  y = "Number of Adoptions",
+  fill = "Animal Type") +
+  theme_minimal()
+
+p_grouped_with_total
+
+```
+
+This visualization helps assess the effectiveness of LBACS programs by showing how total adoptions and species-specific trends have changed over time.
+
+The data shows a clear upward trend in adoptions, especially after 2021. Dogs and cats make up the largest share of adoptions, but other animals have also increased. The spike aligns with LBACS program expansion and staffing changes. This pattern suggests that strategic investments in foster programs and staff roles can have measurable impact on outcomes.
+
+## Intake Conditions and Outcomes
+
+Grouped bar chart of outcomes based on the animal’s condition when arriving at the shelter.
+
+```{r}
+
+# Clean up intake condition (handle potential typos or variations)
+longbeach_cleaned_intake <- longbeach %>%
+  mutate(intake_condition_cleaned = tolower(trimws(intake_condition))) %>%
+  filter(!is.na(intake_condition_cleaned) & !is.na(outcome_type))
+
+# Get counts of outcomes for each intake condition
+intake_outcome_counts <- longbeach_cleaned_intake %>%
+  group_by(intake_condition_cleaned, outcome_type) %>%
+  count(name = "n") %>%
+  ungroup()
+
+# Calculate percentages for each intake condition
+intake_outcome_percentages <- intake_outcome_counts %>%
+  group_by(intake_condition_cleaned) %>%
+  mutate(total = sum(n), percentage = (n / total) * 100) %>%
+  ungroup()
+
+# Visualize outcomes by intake condition
+plot_intake_outcome <- ggplot(intake_outcome_percentages,
+                              aes(x = intake_condition_cleaned,
+                                  y = percentage,
+                                  fill = outcome_type)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(
+  title = "Outcomes by Intake Condition",
+  x = "Intake Condition",
+  y = "Percentage of Outcomes",
+  fill = "Outcome Type") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+print(plot_intake_outcome)
+```
+
+Intake condition plays a major role in what happens to an animal. Healthy ones are usually adopted or transferred, while severely injured or behaviorally challenged animals have worse outcomes. This highlights the importance of early medical and behavioral intervention programs at intake.
+
+
+## Time Spent in Shelter Before Adoption
+
+Boxplot of how long different animal types stay before adoption.
+
+```{r}
+
+# Filter for adoptions and calculate length of stay in days
+adoptions_length_stay <- longbeach %>%
+  filter(outcome_type == "adoption" & !is.na(intake_date) & !is.na(outcome_date)) %>%
+  mutate(length_of_stay = as.numeric(difftime(outcome_date, intake_date, units = "days")),
+         adoption_year = year(outcome_date))
+
+plot_stay_by_animal_type <- ggplot(adoptions_length_stay, aes(x = animal_type, y = length_of_stay, fill = animal_type)) +
+  geom_boxplot(outlier.shape = 21, outlier.fill = "white", outlier.color = "black", outlier.size = 1.5, width = 0.7) +
+  scale_fill_brewer(palette = "Set2") + 
+  labs(
+    title = "Length of Stay Before Adoption by Animal Type",
+    x = "Animal Type",
+    y = "Length of Stay (Days)"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "none",
+    plot.title = element_text(face = "bold", size = 16, hjust = 0.5),
+    axis.title = element_text(face = "bold"),
+    panel.grid.major = element_line(color = "gray90")
+  )
+
+print(plot_stay_by_animal_type)
+```
+
+Small animals tend to get adopted quickly. Cats and dogs have a wider range—some wait much longer than others. These findings could help shelters prioritize enrichment, foster placement, or marketing efforts for animals at risk of longer stays.
+
+## Top Reasons for Intake Over Time
+
+Stacked line or bar plot showing trends in the top 10 intake reasons.
+
+```{r}
+
+# Clean up reason for intake (handle potential typos or variations)
+longbeach_cleaned_reason <- longbeach %>%
+  mutate(reason_for_intake_cleaned = tolower(trimws(reason_for_intake))) %>%
+  filter(!is.na(reason_for_intake_cleaned))
+
+# Get counts of intake reasons per year
+intake_reason_counts_year <- longbeach_cleaned_reason %>%
+  mutate(intake_year = year(intake_date)) %>%
+  group_by(intake_year, reason_for_intake_cleaned) %>%
+  count(name = "n") %>%
+  ungroup()
+
+# Focus on the 10 most common intake reasons for readability
+top_n_reasons <- intake_reason_counts_year %>%
+  group_by(reason_for_intake_cleaned) %>%
+  summarise(total = sum(n)) %>%
+  top_n(10, total) %>% # Adjust the number as needed
+  pull(reason_for_intake_cleaned)
+
+top_reasons_over_time <- intake_reason_counts_year %>%
+  filter(reason_for_intake_cleaned %in% top_n_reasons)
+
+# Plot how the most common intake reasons have changed year by year
+plot_intake_reason_year <- ggplot(top_reasons_over_time,
+                                  aes(x = intake_year,
+                                      y = n,
+                                      fill = reason_for_intake_cleaned)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Top Intake Reasons Over Time",
+       x = "Intake Year",
+       y = "Number of Intakes",
+       fill = "Reason for Intake") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+print(plot_intake_reason_year)
+
+```
+
+Owner surrenders and strays remain the most common reasons for intake. Reasons related to housing, like eviction or landlord restrictions, also show up often. These trends suggest that shelters might benefit from collaborating with housing services or outreach programs..
+
+
+```{r}
+ # Combined Plot
+top_row <- p_grouped_with_total + plot_intake_outcome
+
+bottom_row <- plot_stay_by_animal_type + plot_intake_reason_year
+
+combined_plot <- (top_row) / (bottom_row) +
+  plot_annotation(title = "Exploring Animal Shelter Trends with Data")
+
+# Save to file
+ggsave("Output/longbeach_summary_plots.png", combined_plot, width = 14, height = 10, dpi = 300) 
+
+```
+
+
+## Conclusion
+Looking at all these charts together, it’s clear that the Long Beach Animal Shelter has made real progress over the past few years. Adoptions are up, especially after key program and staffing changes. At the same time, the data shows that health, behavior, and even housing issues can affect an animal’s path through the shelter. It’s not just about numbers,it’s about how well the system works for the animals and the people involved. Hopefully, these insights can help guide even better decisions in the future.
+
